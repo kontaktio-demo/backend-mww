@@ -5,6 +5,12 @@ const path = require('path');
 const fs = require('fs/promises');
 const { v4: uuidv4 } = require('uuid');
 
+// ─── Memory optimizations for Sharp (libvips) ───────────
+// Limit internal tile cache to ~50 MB (default is much higher)
+sharp.cache({ memory: 50, files: 10, items: 100 });
+// Process one image at a time inside libvips to keep peak RAM low
+sharp.concurrency(1);
+
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 const FORMAT = process.env.IMAGE_FORMAT || 'both';
 const QUALITY = parseInt(process.env.IMAGE_QUALITY, 10) || 80;
@@ -19,14 +25,19 @@ async function ensureDir() {
 }
 
 /**
- * Process an uploaded image buffer:
+ * Process an uploaded image (from a temp file on disk):
  * - Convert to WebP and/or AVIF
  * - Generate thumbnail versions
  * - Save all to disk
  *
- * Returns an image object ready to attach to an Offer.
+ * Uses file→file Sharp pipelines (.toFile) instead of holding
+ * full-resolution buffers in Node.js memory.
+ *
+ * @param {string} inputPath  – absolute path to the temp file on disk
+ * @param {string} originalName – original client filename (for extension)
+ * @param {string} altText
  */
-async function processImage(buffer, originalName, altText) {
+async function processImage(inputPath, originalName, altText) {
   await ensureDir();
 
   const id = uuidv4();
@@ -44,60 +55,56 @@ async function processImage(buffer, originalName, altText) {
     order: 0,
   };
 
-  // Save original (as-is, just resized)
-  const originalBuffer = await sharp(buffer)
-    .resize({ width: MAX_WIDTH, withoutEnlargement: true })
-    .toBuffer();
+  // Each step reads from the temp file on disk → writes directly to final file.
+  // Only one decoded image is in memory at a time (sharp.concurrency(1)).
 
+  // Save original (resized to max width, keep original format)
   const origFilename = `${baseName}-original${ext || '.jpg'}`;
-  await fs.writeFile(path.join(UPLOADS_DIR, origFilename), originalBuffer);
+  await sharp(inputPath)
+    .resize({ width: MAX_WIDTH, withoutEnlargement: true })
+    .toFile(path.join(UPLOADS_DIR, origFilename));
   result.original = `/uploads/${origFilename}`;
 
   // Generate WebP (full + thumb)
   if (FORMAT === 'webp' || FORMAT === 'both') {
-    const webpBuffer = await sharp(buffer)
+    const webpFilename = `${baseName}.webp`;
+    await sharp(inputPath)
       .resize({ width: MAX_WIDTH, withoutEnlargement: true })
       .webp({ quality: QUALITY })
-      .toBuffer();
-    const webpFilename = `${baseName}.webp`;
-    await fs.writeFile(path.join(UPLOADS_DIR, webpFilename), webpBuffer);
+      .toFile(path.join(UPLOADS_DIR, webpFilename));
     result.webp = `/uploads/${webpFilename}`;
 
-    const thumbWebpBuffer = await sharp(buffer)
+    const thumbWebpFilename = `${baseName}-thumb.webp`;
+    await sharp(inputPath)
       .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
       .webp({ quality: QUALITY - 10 })
-      .toBuffer();
-    const thumbWebpFilename = `${baseName}-thumb.webp`;
-    await fs.writeFile(path.join(UPLOADS_DIR, thumbWebpFilename), thumbWebpBuffer);
+      .toFile(path.join(UPLOADS_DIR, thumbWebpFilename));
     result.thumbWebp = `/uploads/${thumbWebpFilename}`;
   }
 
   // Generate AVIF (full + thumb)
   if (FORMAT === 'avif' || FORMAT === 'both') {
-    const avifBuffer = await sharp(buffer)
+    const avifFilename = `${baseName}.avif`;
+    await sharp(inputPath)
       .resize({ width: MAX_WIDTH, withoutEnlargement: true })
       .avif({ quality: QUALITY })
-      .toBuffer();
-    const avifFilename = `${baseName}.avif`;
-    await fs.writeFile(path.join(UPLOADS_DIR, avifFilename), avifBuffer);
+      .toFile(path.join(UPLOADS_DIR, avifFilename));
     result.avif = `/uploads/${avifFilename}`;
 
-    const thumbAvifBuffer = await sharp(buffer)
+    const thumbAvifFilename = `${baseName}-thumb.avif`;
+    await sharp(inputPath)
       .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
       .avif({ quality: QUALITY - 10 })
-      .toBuffer();
-    const thumbAvifFilename = `${baseName}-thumb.avif`;
-    await fs.writeFile(path.join(UPLOADS_DIR, thumbAvifFilename), thumbAvifBuffer);
+      .toFile(path.join(UPLOADS_DIR, thumbAvifFilename));
     result.thumbAvif = `/uploads/${thumbAvifFilename}`;
   }
 
-  // Thumb from original format
-  const thumbBuffer = await sharp(buffer)
+  // Thumb from original format (JPEG)
+  const thumbFilename = `${baseName}-thumb.jpg`;
+  await sharp(inputPath)
     .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
     .jpeg({ quality: QUALITY })
-    .toBuffer();
-  const thumbFilename = `${baseName}-thumb.jpg`;
-  await fs.writeFile(path.join(UPLOADS_DIR, thumbFilename), thumbBuffer);
+    .toFile(path.join(UPLOADS_DIR, thumbFilename));
   result.thumb = `/uploads/${thumbFilename}`;
 
   return result;

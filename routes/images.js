@@ -2,13 +2,23 @@
 
 const router = require('express').Router();
 const multer = require('multer');
+const os = require('os');
+const path = require('path');
+const fs = require('fs/promises');
 const auth = require('../middleware/auth');
 const { processImage } = require('../utils/imageProcessor');
 
 const MAX_SIZE = (parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 10) * 1024 * 1024;
 
+// ─── Use disk storage instead of memory to avoid holding entire files in RAM ──
 const upload = multer({
-  storage: multer.memoryStorage(),
+  storage: multer.diskStorage({
+    destination: os.tmpdir(),
+    filename(_req, file, cb) {
+      const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      cb(null, `upload-${unique}${path.extname(file.originalname)}`);
+    },
+  }),
   limits: { fileSize: MAX_SIZE },
   fileFilter(_req, file, cb) {
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif', 'image/bmp', 'image/tiff'];
@@ -19,6 +29,11 @@ const upload = multer({
     }
   },
 });
+
+/** Safely remove a temporary file (ignore errors). */
+async function removeTmp(filePath) {
+  try { await fs.unlink(filePath); } catch { /* ignore */ }
+}
 
 /**
  * POST /api/images/upload
@@ -34,13 +49,19 @@ router.post('/upload', auth, upload.single('image'), async (req, res) => {
 
     const rawAlt = req.body.alt;
     const alt = typeof rawAlt === 'string' ? rawAlt : '';
-    const result = await processImage(req.file.buffer, req.file.originalname, alt);
+    const result = await processImage(req.file.path, req.file.originalname, alt);
+
+    // Clean up temporary upload
+    await removeTmp(req.file.path);
 
     res.json({
       message: 'Zdjęcie przesłane i przetworzone.',
       image: result,
     });
   } catch (err) {
+    // Best-effort cleanup on error
+    if (req.file && req.file.path) await removeTmp(req.file.path);
+
     console.error('Image upload error:', err);
     if (err.message && err.message.includes('Niedozwolony')) {
       return res.status(400).json({ error: err.message });
@@ -51,11 +72,14 @@ router.post('/upload', auth, upload.single('image'), async (req, res) => {
 
 /**
  * POST /api/images/upload-multiple
- * Upload multiple images (multipart/form-data, field: "images")
+ * Upload up to 10 images (multipart/form-data, field: "images")
  * Auth required
  * Returns array of processed image objects
+ *
+ * Files are processed ONE AT A TIME and each temp file is deleted
+ * immediately after processing to keep RAM & disk pressure low.
  */
-router.post('/upload-multiple', auth, upload.array('images', 20), async (req, res) => {
+router.post('/upload-multiple', auth, upload.array('images', 10), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'Nie przesłano plików.' });
@@ -65,9 +89,12 @@ router.post('/upload-multiple', auth, upload.array('images', 20), async (req, re
     for (let i = 0; i < req.files.length; i++) {
       const file = req.files[i];
       const alt = '';
-      const result = await processImage(file.buffer, file.originalname, alt);
+      const result = await processImage(file.path, file.originalname, alt);
       result.order = i;
       results.push(result);
+
+      // Remove temp file immediately to free disk space for next image
+      await removeTmp(file.path);
     }
 
     res.json({
@@ -75,6 +102,11 @@ router.post('/upload-multiple', auth, upload.array('images', 20), async (req, re
       images: results,
     });
   } catch (err) {
+    // Best-effort cleanup on error
+    if (req.files) {
+      for (const f of req.files) await removeTmp(f.path);
+    }
+
     console.error('Multi-image upload error:', err);
     res.status(500).json({ error: 'Błąd przetwarzania zdjęć.' });
   }
