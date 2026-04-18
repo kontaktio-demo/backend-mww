@@ -8,6 +8,7 @@ const fs = require('fs/promises');
 const crypto = require('crypto');
 const auth = require('../middleware/auth');
 const { processImage } = require('../utils/imageProcessor');
+const { detectMimeType } = require('../utils/security');
 
 const MAX_SIZE = (parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 5) * 1024 * 1024;
 
@@ -39,6 +40,22 @@ async function removeTmp(filePath) {
   } catch { /* ignore – file may already be gone */ }
 }
 
+/** Validate file magic bytes against declared MIME type */
+async function validateMagicBytes(filePath, declaredMime) {
+  const handle = await fs.open(filePath, 'r');
+  try {
+    const buf = Buffer.alloc(16);
+    await handle.read(buf, 0, 16, 0);
+    const detected = detectMimeType(buf);
+    if (!detected) return false;
+    // Allow the file if the detected type is a valid image type
+    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif', 'image/bmp', 'image/tiff'];
+    return allowed.includes(detected);
+  } finally {
+    await handle.close();
+  }
+}
+
 /**
  * POST /api/images/upload
  * Upload single image (multipart/form-data, field: "image")
@@ -51,8 +68,15 @@ router.post('/upload', auth, upload.single('image'), async (req, res) => {
       return res.status(400).json({ error: 'Nie przesłano pliku.' });
     }
 
+    // Validate file magic bytes to prevent spoofed MIME types
+    const validMagic = await validateMagicBytes(req.file.path, req.file.mimetype);
+    if (!validMagic) {
+      await removeTmp(req.file.path);
+      return res.status(400).json({ error: 'Plik nie jest prawidłowym obrazem (zweryfikowano nagłówki pliku).' });
+    }
+
     const rawAlt = req.body.alt;
-    const alt = typeof rawAlt === 'string' ? rawAlt : '';
+    const alt = typeof rawAlt === 'string' ? rawAlt.substring(0, 300) : '';
     const result = await processImage(req.file.path, req.file.originalname, alt);
 
     // Clean up temporary upload
@@ -92,6 +116,14 @@ router.post('/upload-multiple', auth, upload.array('images', 5), async (req, res
     const results = [];
     for (let i = 0; i < req.files.length; i++) {
       const file = req.files[i];
+
+      // Validate file magic bytes
+      const validMagic = await validateMagicBytes(file.path, file.mimetype);
+      if (!validMagic) {
+        await removeTmp(file.path);
+        continue; // Skip invalid files
+      }
+
       const alt = '';
       const result = await processImage(file.path, file.originalname, alt);
       result.order = i;

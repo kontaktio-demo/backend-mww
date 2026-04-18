@@ -132,6 +132,7 @@ async function processImage(inputPath, originalName, altText) {
 
 /**
  * Delete all files for an image object from disk.
+ * Validates paths to prevent path traversal attacks.
  */
 async function deleteImageFiles(imageObj) {
   if (!imageObj) return;
@@ -146,7 +147,9 @@ async function deleteImageFiles(imageObj) {
 
   for (const filePath of files) {
     try {
-      const fullPath = path.join(__dirname, '..', filePath);
+      const fullPath = path.resolve(path.join(__dirname, '..', filePath));
+      // Ensure resolved path is inside the uploads directory to prevent traversal
+      if (!fullPath.startsWith(UPLOADS_DIR + path.sep) && fullPath !== UPLOADS_DIR) continue;
       await fs.unlink(fullPath);
     } catch {
       // File might not exist, ignore

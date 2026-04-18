@@ -22,6 +22,11 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: 'Podaj nazwę użytkownika i hasło.' });
     }
 
+    // Reject excessively long credentials to prevent DoS
+    if (String(username).length > 100 || String(password).length > 128) {
+      return res.status(400).json({ message: 'Nieprawidłowa nazwa użytkownika lub hasło.' });
+    }
+
     const { data: user, error } = await supabase
       .from('users')
       .select('*')
@@ -50,7 +55,7 @@ router.post('/login', async (req, res) => {
     const token = jwt.sign(
       { id: user.id, role: user.role },
       JWT_SECRET,
-      { expiresIn: JWT_EXPIRES }
+      { algorithm: 'HS256', expiresIn: JWT_EXPIRES }
     );
 
     res.json({
@@ -97,6 +102,11 @@ router.post('/change-password', auth, async (req, res) => {
 
     if (String(newPassword).length < 6) {
       return res.status(400).json({ message: 'Nowe hasło musi mieć minimum 6 znaków.' });
+    }
+
+    // Cap password length to prevent bcrypt DoS (bcrypt truncates at 72 bytes anyway)
+    if (String(newPassword).length > 128) {
+      return res.status(400).json({ message: 'Hasło nie może przekraczać 128 znaków.' });
     }
 
     // Fetch full user with password

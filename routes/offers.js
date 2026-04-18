@@ -4,6 +4,7 @@ const router = require('express').Router();
 const supabase = require('../db');
 const auth = require('../middleware/auth');
 const { deleteImageFiles } = require('../utils/imageProcessor');
+const { isValidUUID, isSafeUrl, sanitiseString, sanitiseImages, sanitiseFeatures } = require('../utils/security');
 
 // ─── Helpers ─────────────────────────────────────────────
 
@@ -35,26 +36,26 @@ function buildOfferRow(body) {
   const row = {};
 
   // Required
-  if (body.type !== undefined) row.type = String(body.type);
-  if (body.category !== undefined) row.category = String(body.category);
-  if (body.title !== undefined) row.title = String(body.title).substring(0, 200);
+  if (body.type !== undefined) row.type = sanitiseString(body.type, 20);
+  if (body.category !== undefined) row.category = sanitiseString(body.category, 30);
+  if (body.title !== undefined) row.title = sanitiseString(body.title, 200);
   if (body.price !== undefined) row.price = Number(body.price) || 0;
   if (body.area !== undefined) row.area = Number(body.area) || 0;
-  if (body.address !== undefined) row.address = String(body.address).substring(0, 500);
+  if (body.address !== undefined) row.address = sanitiseString(body.address, 500);
 
   // Optional scalars
-  if (body.currency !== undefined) row.currency = String(body.currency || 'PLN');
+  if (body.currency !== undefined) row.currency = sanitiseString(body.currency || 'PLN', 10);
   if (body.rooms !== undefined) row.rooms = parseInt(body.rooms, 10) || 0;
   if (body.floor !== undefined) row.floor = parseInt(body.floor, 10) || 0;
   if (body.totalFloors !== undefined) row.total_floors = parseInt(body.totalFloors, 10) || 0;
   if (body.yearBuilt !== undefined) row.year_built = parseInt(body.yearBuilt, 10) || null;
 
   // Building
-  if (body.buildingType !== undefined) row.building_type = String(body.buildingType || '');
-  if (body.buildingMaterial !== undefined) row.building_material = String(body.buildingMaterial || '');
-  if (body.heatingType !== undefined) row.heating_type = String(body.heatingType || '');
-  if (body.condition !== undefined) row.condition = String(body.condition || '');
-  if (body.parking !== undefined) row.parking = String(body.parking || '');
+  if (body.buildingType !== undefined) row.building_type = sanitiseString(body.buildingType, 100);
+  if (body.buildingMaterial !== undefined) row.building_material = sanitiseString(body.buildingMaterial, 100);
+  if (body.heatingType !== undefined) row.heating_type = sanitiseString(body.heatingType, 100);
+  if (body.condition !== undefined) row.condition = sanitiseString(body.condition, 100);
+  if (body.parking !== undefined) row.parking = sanitiseString(body.parking, 100);
 
   // Booleans
   const bools = ['balcony','terrace','garden','elevator','basement','furnished','fencing','active','featured'];
@@ -64,48 +65,57 @@ function buildOfferRow(body) {
 
   // Plot
   if (body.plotArea !== undefined) row.plot_area = Number(body.plotArea) || 0;
-  if (body.plotType !== undefined) row.plot_type = String(body.plotType || '');
-  if (body.utilities !== undefined) row.utilities = String(body.utilities || '');
+  if (body.plotType !== undefined) row.plot_type = sanitiseString(body.plotType, 100);
+  if (body.utilities !== undefined) row.utilities = sanitiseString(body.utilities, 300);
 
   // Location
-  if (body.city !== undefined) row.city = String(body.city || '');
-  if (body.district !== undefined) row.district = String(body.district || '');
-  if (body.street !== undefined) row.street = String(body.street || '');
+  if (body.city !== undefined) row.city = sanitiseString(body.city, 100);
+  if (body.district !== undefined) row.district = sanitiseString(body.district, 100);
+  if (body.street !== undefined) row.street = sanitiseString(body.street, 200);
   if (body.latitude !== undefined) row.latitude = body.latitude ? Number(body.latitude) : null;
   if (body.longitude !== undefined) row.longitude = body.longitude ? Number(body.longitude) : null;
 
   // Descriptions
-  if (body.desc !== undefined) row.description = String(body.desc || '').substring(0, 5000);
-  if (body.shortDesc !== undefined) row.short_desc = String(body.shortDesc || '').substring(0, 300);
+  if (body.desc !== undefined) row.description = sanitiseString(body.desc, 5000);
+  if (body.shortDesc !== undefined) row.short_desc = sanitiseString(body.shortDesc, 300);
 
-  // Images
-  if (body.images !== undefined) row.images = Array.isArray(body.images) ? body.images : [];
-  if (body.img !== undefined) row.img = String(body.img || '');
+  // Images – sanitise JSONB to prevent injection / path traversal
+  if (body.images !== undefined) row.images = sanitiseImages(body.images);
+  if (body.img !== undefined) row.img = sanitiseString(body.img, 500);
 
-  // Features
-  if (body.features !== undefined) row.features = Array.isArray(body.features) ? body.features : [];
+  // Features – sanitise to flat array of short strings
+  if (body.features !== undefined) row.features = sanitiseFeatures(body.features);
 
   // Costs
   if (body.rent !== undefined) row.rent = Number(body.rent) || 0;
   if (body.deposit !== undefined) row.deposit = Number(body.deposit) || 0;
 
   // SEO
-  if (body.metaTitle !== undefined) row.meta_title = String(body.metaTitle || '');
-  if (body.metaDescription !== undefined) row.meta_description = String(body.metaDescription || '');
+  if (body.metaTitle !== undefined) row.meta_title = sanitiseString(body.metaTitle, 200);
+  if (body.metaDescription !== undefined) row.meta_description = sanitiseString(body.metaDescription, 500);
 
   // Agent
-  if (body.agentName !== undefined) row.agent_name = String(body.agentName || '');
-  if (body.agentPhone !== undefined) row.agent_phone = String(body.agentPhone || '');
-  if (body.agentEmail !== undefined) row.agent_email = String(body.agentEmail || '');
+  if (body.agentName !== undefined) row.agent_name = sanitiseString(body.agentName, 100);
+  if (body.agentPhone !== undefined) row.agent_phone = sanitiseString(body.agentPhone, 30);
+  if (body.agentEmail !== undefined) row.agent_email = sanitiseString(body.agentEmail, 200);
 
   // Refs & source
-  if (body.refNumber !== undefined) row.ref_number = String(body.refNumber || '');
-  if (body.source !== undefined) row.source = String(body.source || '');
-  if (body.sourceUrl !== undefined) row.source_url = String(body.sourceUrl || '');
+  if (body.refNumber !== undefined) row.ref_number = sanitiseString(body.refNumber, 50);
+  if (body.source !== undefined) row.source = sanitiseString(body.source, 100);
+  if (body.sourceUrl !== undefined) {
+    const url = sanitiseString(body.sourceUrl, 2000);
+    row.source_url = isSafeUrl(url) ? url : '';
+  }
 
-  // Media
-  if (body.videoUrl !== undefined) row.video_url = String(body.videoUrl || '');
-  if (body.virtualTourUrl !== undefined) row.virtual_tour_url = String(body.virtualTourUrl || '');
+  // Media – validate URL schemes to prevent javascript: / data: injection
+  if (body.videoUrl !== undefined) {
+    const url = sanitiseString(body.videoUrl, 2000);
+    row.video_url = isSafeUrl(url) ? url : '';
+  }
+  if (body.virtualTourUrl !== undefined) {
+    const url = sanitiseString(body.virtualTourUrl, 2000);
+    row.virtual_tour_url = isSafeUrl(url) ? url : '';
+  }
 
   // Dates
   if (body.availableFrom !== undefined) row.available_from = body.availableFrom || null;
@@ -392,6 +402,9 @@ router.post('/', auth, async (req, res) => {
 
 router.patch('/:id', auth, async (req, res) => {
   try {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Nieprawidłowy identyfikator oferty.' });
+    }
     const row = buildOfferRow(req.body);
 
     const { data, error } = await supabase
@@ -413,6 +426,9 @@ router.patch('/:id', auth, async (req, res) => {
 
 router.put('/:id', auth, async (req, res) => {
   try {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Nieprawidłowy identyfikator oferty.' });
+    }
     const row = buildOfferRow(req.body);
 
     const { data, error } = await supabase
@@ -434,6 +450,9 @@ router.put('/:id', auth, async (req, res) => {
 
 router.patch('/:id/toggle', auth, async (req, res) => {
   try {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Nieprawidłowy identyfikator oferty.' });
+    }
     const { data: current, error: fetchErr } = await supabase
       .from('offers')
       .select('id, active')
@@ -459,6 +478,9 @@ router.patch('/:id/toggle', auth, async (req, res) => {
 
 router.patch('/:id/featured', auth, async (req, res) => {
   try {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Nieprawidłowy identyfikator oferty.' });
+    }
     const { data: current, error: fetchErr } = await supabase
       .from('offers')
       .select('id, featured')
@@ -484,6 +506,9 @@ router.patch('/:id/featured', auth, async (req, res) => {
 
 router.delete('/:id', auth, async (req, res) => {
   try {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Nieprawidłowy identyfikator oferty.' });
+    }
     const { data: offer, error: fetchErr } = await supabase
       .from('offers')
       .select('id, images')
@@ -512,6 +537,9 @@ router.delete('/:id', auth, async (req, res) => {
 
 router.post('/:id/images', auth, async (req, res) => {
   try {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Nieprawidłowy identyfikator oferty.' });
+    }
     const { data: offer, error: fetchErr } = await supabase
       .from('offers')
       .select('id, images, img')
@@ -520,7 +548,7 @@ router.post('/:id/images', auth, async (req, res) => {
 
     if (fetchErr || !offer) return res.status(404).json({ error: 'Oferta nie została znaleziona.' });
 
-    const newImages = req.body.images || [];
+    const newImages = sanitiseImages(req.body.images || []);
     if (!Array.isArray(newImages) || newImages.length === 0) {
       return res.status(400).json({ error: 'Brak zdjęć do dodania.' });
     }
@@ -550,6 +578,9 @@ router.post('/:id/images', auth, async (req, res) => {
 
 router.delete('/:id/images/:imageIndex', auth, async (req, res) => {
   try {
+    if (!isValidUUID(req.params.id)) {
+      return res.status(400).json({ error: 'Nieprawidłowy identyfikator oferty.' });
+    }
     const { data: offer, error: fetchErr } = await supabase
       .from('offers')
       .select('id, images')
