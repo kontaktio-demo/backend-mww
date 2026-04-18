@@ -3,13 +3,18 @@
 const sharp = require('sharp');
 const path = require('path');
 const fs = require('fs/promises');
+const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 
-// ─── Memory optimizations for Sharp (libvips) ───────────
-// Limit internal tile cache to ~50 MB (default is much higher)
-sharp.cache({ memory: 50, files: 10, items: 100 });
-// Process one image at a time inside libvips to keep peak RAM low
+// ─── Aggressive memory optimizations for 512 MB Render instances ────
+// Disable libvips tile/operation cache entirely — every MB counts
+sharp.cache(false);
+// Single-threaded libvips processing to minimise peak resident memory
 sharp.concurrency(1);
+
+// Reject images larger than 50 megapixels (≈ 200 MB decoded RGBA).
+// Prevents a single huge photo from blowing the 512 MB limit.
+const MAX_INPUT_PIXELS = 50_000_000;
 
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 const FORMAT = process.env.IMAGE_FORMAT || 'both';
@@ -25,16 +30,30 @@ async function ensureDir() {
 }
 
 /**
- * Process an uploaded image (from a temp file on disk):
- * - Convert to WebP and/or AVIF
- * - Generate thumbnail versions
- * - Save all to disk
+ * Helper: create a sharp instance from a file path with memory-safe defaults.
+ * - sequentialRead: stream from disk instead of mmap (halves peak RAM)
+ * - limitInputPixels: reject absurdly large images before decode
+ */
+function openImage(filePath) {
+  return sharp(filePath, {
+    sequentialRead: true,
+    limitInputPixels: MAX_INPUT_PIXELS,
+  });
+}
+
+/**
+ * Process an uploaded image (from a temp file on disk).
  *
- * Uses file→file Sharp pipelines (.toFile) instead of holding
- * full-resolution buffers in Node.js memory.
+ * **Two-pass strategy** to keep RAM low on 512 MB instances:
+ *   1. Decode the raw upload ONCE → save a resized JPEG intermediate to /tmp.
+ *   2. Use that smaller intermediate as the source for WebP / AVIF / thumbnails.
  *
- * @param {string} inputPath  – absolute path to the temp file on disk
- * @param {string} originalName – original client filename (for extension)
+ * This avoids decoding a potentially huge raw/PNG/TIFF file multiple times.
+ * Each sharp pipeline is sequential (file→file), so only ONE decoded image
+ * lives in libvips memory at any moment.
+ *
+ * @param {string} inputPath     – absolute path to the temp upload on disk
+ * @param {string} originalName  – original client filename (for extension)
  * @param {string} altText
  */
 async function processImage(inputPath, originalName, altText) {
@@ -55,27 +74,29 @@ async function processImage(inputPath, originalName, altText) {
     order: 0,
   };
 
-  // Each step reads from the temp file on disk → writes directly to final file.
-  // Only one decoded image is in memory at a time (sharp.concurrency(1)).
-
-  // Save original (resized to max width, keep original format)
+  // ── Pass 1: decode raw upload → save resized original ──────────────
   const origFilename = `${baseName}-original${ext || '.jpg'}`;
-  await sharp(inputPath)
+  const origPath = path.join(UPLOADS_DIR, origFilename);
+  await openImage(inputPath)
     .resize({ width: MAX_WIDTH, withoutEnlargement: true })
-    .toFile(path.join(UPLOADS_DIR, origFilename));
+    .toFile(origPath);
   result.original = `/uploads/${origFilename}`;
+
+  // ── Pass 2: use the (smaller) resized original as source ───────────
+  // From here on we never touch the raw upload again, so libvips only
+  // needs to decode a ≤ 1920px-wide JPEG/PNG instead of the raw input.
+  const src = origPath;
 
   // Generate WebP (full + thumb)
   if (FORMAT === 'webp' || FORMAT === 'both') {
     const webpFilename = `${baseName}.webp`;
-    await sharp(inputPath)
-      .resize({ width: MAX_WIDTH, withoutEnlargement: true })
+    await openImage(src)
       .webp({ quality: QUALITY })
       .toFile(path.join(UPLOADS_DIR, webpFilename));
     result.webp = `/uploads/${webpFilename}`;
 
     const thumbWebpFilename = `${baseName}-thumb.webp`;
-    await sharp(inputPath)
+    await openImage(src)
       .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
       .webp({ quality: QUALITY - 10 })
       .toFile(path.join(UPLOADS_DIR, thumbWebpFilename));
@@ -85,14 +106,13 @@ async function processImage(inputPath, originalName, altText) {
   // Generate AVIF (full + thumb)
   if (FORMAT === 'avif' || FORMAT === 'both') {
     const avifFilename = `${baseName}.avif`;
-    await sharp(inputPath)
-      .resize({ width: MAX_WIDTH, withoutEnlargement: true })
+    await openImage(src)
       .avif({ quality: QUALITY })
       .toFile(path.join(UPLOADS_DIR, avifFilename));
     result.avif = `/uploads/${avifFilename}`;
 
     const thumbAvifFilename = `${baseName}-thumb.avif`;
-    await sharp(inputPath)
+    await openImage(src)
       .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
       .avif({ quality: QUALITY - 10 })
       .toFile(path.join(UPLOADS_DIR, thumbAvifFilename));
@@ -101,7 +121,7 @@ async function processImage(inputPath, originalName, altText) {
 
   // Thumb from original format (JPEG)
   const thumbFilename = `${baseName}-thumb.jpg`;
-  await sharp(inputPath)
+  await openImage(src)
     .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
     .jpeg({ quality: QUALITY })
     .toFile(path.join(UPLOADS_DIR, thumbFilename));

@@ -5,18 +5,18 @@ const multer = require('multer');
 const os = require('os');
 const path = require('path');
 const fs = require('fs/promises');
+const crypto = require('crypto');
 const auth = require('../middleware/auth');
 const { processImage } = require('../utils/imageProcessor');
 
-const MAX_SIZE = (parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 10) * 1024 * 1024;
+const MAX_SIZE = (parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 5) * 1024 * 1024;
 
 // ─── Use disk storage instead of memory to avoid holding entire files in RAM ──
 const upload = multer({
   storage: multer.diskStorage({
     destination: os.tmpdir(),
     filename(_req, file, cb) {
-      const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-      cb(null, `upload-${unique}${path.extname(file.originalname)}`);
+      cb(null, `upload-${crypto.randomUUID()}${path.extname(file.originalname)}`);
     },
   }),
   limits: { fileSize: MAX_SIZE },
@@ -30,9 +30,13 @@ const upload = multer({
   },
 });
 
-/** Safely remove a temporary file (ignore errors). */
+/** Safely remove a temporary file. Only deletes within os.tmpdir(). */
 async function removeTmp(filePath) {
-  try { await fs.unlink(filePath); } catch { /* ignore */ }
+  try {
+    const resolved = path.resolve(filePath);
+    if (!resolved.startsWith(os.tmpdir())) return;
+    await fs.unlink(resolved);
+  } catch { /* ignore – file may already be gone */ }
 }
 
 /**
@@ -72,14 +76,14 @@ router.post('/upload', auth, upload.single('image'), async (req, res) => {
 
 /**
  * POST /api/images/upload-multiple
- * Upload up to 10 images (multipart/form-data, field: "images")
+ * Upload up to 5 images (multipart/form-data, field: "images")
  * Auth required
  * Returns array of processed image objects
  *
  * Files are processed ONE AT A TIME and each temp file is deleted
  * immediately after processing to keep RAM & disk pressure low.
  */
-router.post('/upload-multiple', auth, upload.array('images', 10), async (req, res) => {
+router.post('/upload-multiple', auth, upload.array('images', 5), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'Nie przesłano plików.' });
@@ -116,7 +120,7 @@ router.post('/upload-multiple', auth, upload.array('images', 10), async (req, re
 router.use((err, _req, res, _next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: `Plik jest zbyt duży. Maksymalny rozmiar: ${process.env.MAX_FILE_SIZE_MB || 10} MB.` });
+      return res.status(400).json({ error: `Plik jest zbyt duży. Maksymalny rozmiar: ${process.env.MAX_FILE_SIZE_MB || 5} MB.` });
     }
     return res.status(400).json({ error: err.message });
   }

@@ -10,7 +10,7 @@ services:
     region: frankfurt
     plan: free
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node --max-old-space-size=256 server.js
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
@@ -30,7 +30,7 @@ services:
       - key: ADMIN_PASSWORD
         sync: false  # Ustaw ręcznie
       - key: MAX_FILE_SIZE_MB
-        value: "10"
+        value: "5"
       - key: IMAGE_FORMAT
         value: both
       - key: IMAGE_QUALITY
