@@ -8,6 +8,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
+const hpp = require('hpp');
 
 // Validate critical env vars early
 if (!process.env.JWT_SECRET || process.env.JWT_SECRET.length < 32) {
@@ -27,7 +28,17 @@ const app = express();
 // ─── Security ────────────────────────────────────────────
 app.use(helmet({
   crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      imgSrc: ["'self'", 'data:', 'https:'],
+      scriptSrc: ["'self'"],
+    },
+  },
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
 }));
+app.disable('x-powered-by');
+app.use(hpp());
 
 // ─── CORS ────────────────────────────────────────────────
 const allowedOrigins = (process.env.CORS_ORIGINS || '')
@@ -63,6 +74,13 @@ const authLimiter = rateLimit({
   message: { error: 'Zbyt wiele prób logowania. Spróbuj ponownie za 15 minut.' },
 });
 app.use('/api/auth/login', authLimiter);
+
+const changePasswordLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Zbyt wiele prób zmiany hasła. Spróbuj ponownie za 15 minut.' },
+});
+app.use('/api/auth/change-password', changePasswordLimiter);
 
 // ─── Body parsing ────────────────────────────────────────
 app.use(express.json({ limit: '1mb' }));
