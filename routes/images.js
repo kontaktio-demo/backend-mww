@@ -40,15 +40,18 @@ async function removeTmp(filePath) {
   } catch { /* ignore – file may already be gone */ }
 }
 
-/** Validate file magic bytes against declared MIME type */
-async function validateMagicBytes(filePath, declaredMime) {
-  const handle = await fs.open(filePath, 'r');
+/** Validate file magic bytes to ensure it's a genuine image */
+async function validateMagicBytes(filePath) {
+  // Ensure file is within the expected temp directory
+  const resolved = path.resolve(filePath);
+  if (!resolved.startsWith(os.tmpdir())) return false;
+
+  const handle = await fs.open(resolved, 'r');
   try {
     const buf = Buffer.alloc(16);
     await handle.read(buf, 0, 16, 0);
     const detected = detectMimeType(buf);
     if (!detected) return false;
-    // Allow the file if the detected type is a valid image type
     const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif', 'image/bmp', 'image/tiff'];
     return allowed.includes(detected);
   } finally {
@@ -69,7 +72,7 @@ router.post('/upload', auth, upload.single('image'), async (req, res) => {
     }
 
     // Validate file magic bytes to prevent spoofed MIME types
-    const validMagic = await validateMagicBytes(req.file.path, req.file.mimetype);
+    const validMagic = await validateMagicBytes(req.file.path);
     if (!validMagic) {
       await removeTmp(req.file.path);
       return res.status(400).json({ error: 'Plik nie jest prawidłowym obrazem (zweryfikowano nagłówki pliku).' });
@@ -118,7 +121,7 @@ router.post('/upload-multiple', auth, upload.array('images', 5), async (req, res
       const file = req.files[i];
 
       // Validate file magic bytes
-      const validMagic = await validateMagicBytes(file.path, file.mimetype);
+      const validMagic = await validateMagicBytes(file.path);
       if (!validMagic) {
         await removeTmp(file.path);
         continue; // Skip invalid files

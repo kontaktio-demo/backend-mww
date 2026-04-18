@@ -5,6 +5,9 @@
  */
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_IMAGES_COUNT = 50;
+const MAX_FEATURES_COUNT = 100;
+const MAX_FEATURE_LENGTH = 200;
 
 /**
  * Check if a string is a valid UUID v4 format.
@@ -48,7 +51,7 @@ const ALLOWED_IMAGE_KEYS = new Set([
 
 function sanitiseImages(arr) {
   if (!Array.isArray(arr)) return [];
-  return arr.slice(0, 50).map(item => {
+  return arr.slice(0, MAX_IMAGES_COUNT).map(item => {
     if (typeof item !== 'object' || item === null || Array.isArray(item)) return null;
     const clean = {};
     for (const key of Object.keys(item)) {
@@ -77,7 +80,7 @@ function sanitiseImages(arr) {
  */
 function sanitiseFeatures(arr) {
   if (!Array.isArray(arr)) return [];
-  return arr.slice(0, 100).filter(item => typeof item === 'string').map(s => s.substring(0, 200));
+  return arr.slice(0, MAX_FEATURES_COUNT).filter(item => typeof item === 'string').map(s => s.substring(0, MAX_FEATURE_LENGTH));
 }
 
 /**
