@@ -72,6 +72,7 @@ app.use((_req, res, next) => {
 
 const DEFAULT_ALLOWED_ORIGINS = [
   'https://panel-mww.vercel.app',
+  'https://mww-six.vercel.app',
 ];
 
 const configuredOrigins = (process.env.CORS_ORIGINS || '')
