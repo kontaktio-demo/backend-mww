@@ -7,44 +7,49 @@ const path = require('path');
 const fs = require('fs/promises');
 const crypto = require('crypto');
 const auth = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/auth');
 const { processImage } = require('../utils/imageProcessor');
 const { detectMimeType } = require('../utils/security');
 
-const MAX_SIZE = (parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 5) * 1024 * 1024;
+const MAX_SIZE = Math.min(50, Math.max(1, parseInt(process.env.MAX_FILE_SIZE_MB, 10) || 5)) * 1024 * 1024;
 
-// ─── Use disk storage instead of memory to avoid holding entire files in RAM ──
+const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif', 'image/bmp', 'image/tiff']);
+const ALLOWED_EXT = new Set(['.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif', '.bmp', '.tif', '.tiff']);
+
+const TMP_DIR = path.resolve(os.tmpdir());
+
 const upload = multer({
   storage: multer.diskStorage({
-    destination: os.tmpdir(),
-    filename(_req, file, cb) {
-      cb(null, `upload-${crypto.randomUUID()}${path.extname(file.originalname)}`);
+    destination: TMP_DIR,
+    filename(_req, _file, cb) {
+      cb(null, 'upload-' + crypto.randomBytes(16).toString('hex'));
     },
   }),
-  limits: { fileSize: MAX_SIZE },
+  limits: { fileSize: MAX_SIZE, files: 5, fields: 10, fieldSize: 1024 * 16 },
   fileFilter(_req, file, cb) {
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif', 'image/bmp', 'image/tiff'];
-    if (allowed.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Niedozwolony format pliku. Dozwolone: JPG, PNG, WebP, AVIF, GIF, BMP, TIFF.'));
+    if (!ALLOWED_MIME.has(file.mimetype)) {
+      return cb(new Error('Niedozwolony format pliku.'));
     }
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    if (ext && !ALLOWED_EXT.has(ext)) {
+      return cb(new Error('Niedozwolone rozszerzenie pliku.'));
+    }
+    cb(null, true);
   },
 });
 
-/** Safely remove a temporary file. Only deletes within os.tmpdir(). */
 async function removeTmp(filePath) {
   try {
+    if (typeof filePath !== 'string' || !filePath) return;
     const resolved = path.resolve(filePath);
-    if (!resolved.startsWith(os.tmpdir())) return;
+    if (!resolved.startsWith(TMP_DIR + path.sep) && resolved !== TMP_DIR) return;
     await fs.unlink(resolved);
-  } catch { /* ignore – file may already be gone */ }
+  } catch {}
 }
 
-/** Validate file magic bytes to ensure it's a genuine image */
 async function validateMagicBytes(filePath) {
-  // Ensure file is within the expected temp directory
   const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(os.tmpdir())) return false;
+  if (!resolved.startsWith(TMP_DIR + path.sep)) return false;
 
   const handle = await fs.open(resolved, 'r');
   try {
@@ -52,65 +57,45 @@ async function validateMagicBytes(filePath) {
     await handle.read(buf, 0, 16, 0);
     const detected = detectMimeType(buf);
     if (!detected) return false;
-    const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/avif', 'image/gif', 'image/bmp', 'image/tiff'];
-    return allowed.includes(detected);
+    return ALLOWED_MIME.has(detected);
   } finally {
     await handle.close();
   }
 }
 
-/**
- * POST /api/images/upload
- * Upload single image (multipart/form-data, field: "image")
- * Auth required
- * Returns processed image object
- */
-router.post('/upload', auth, upload.single('image'), async (req, res) => {
+router.post('/upload', auth, requireAdmin, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Nie przesłano pliku.' });
     }
 
-    // Validate file magic bytes to prevent spoofed MIME types
     const validMagic = await validateMagicBytes(req.file.path);
     if (!validMagic) {
       await removeTmp(req.file.path);
-      return res.status(400).json({ error: 'Plik nie jest prawidłowym obrazem (zweryfikowano nagłówki pliku).' });
+      return res.status(400).json({ error: 'Plik nie jest prawidłowym obrazem.' });
     }
 
-    const rawAlt = req.body.alt;
+    const rawAlt = req.body && req.body.alt;
     const alt = typeof rawAlt === 'string' ? rawAlt.substring(0, 300) : '';
     const result = await processImage(req.file.path, req.file.originalname, alt);
 
-    // Clean up temporary upload
     await removeTmp(req.file.path);
 
+    res.set('Cache-Control', 'no-store');
     res.json({
-      message: 'Zdjęcie przesłane i przetworzone.',
+      message: 'Zdjęcie przesłane.',
       image: result,
     });
   } catch (err) {
-    // Best-effort cleanup on error
     if (req.file && req.file.path) await removeTmp(req.file.path);
-
-    console.error('Image upload error:', err);
-    if (err.message && err.message.includes('Niedozwolony')) {
+    if (err && err.message && err.message.includes('Niedozwolon')) {
       return res.status(400).json({ error: err.message });
     }
     res.status(500).json({ error: 'Błąd przetwarzania zdjęcia.' });
   }
 });
 
-/**
- * POST /api/images/upload-multiple
- * Upload up to 5 images (multipart/form-data, field: "images")
- * Auth required
- * Returns array of processed image objects
- *
- * Files are processed ONE AT A TIME and each temp file is deleted
- * immediately after processing to keep RAM & disk pressure low.
- */
-router.post('/upload-multiple', auth, upload.array('images', 5), async (req, res) => {
+router.post('/upload-multiple', auth, requireAdmin, upload.array('images', 5), async (req, res) => {
   try {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'Nie przesłano plików.' });
@@ -120,47 +105,44 @@ router.post('/upload-multiple', auth, upload.array('images', 5), async (req, res
     for (let i = 0; i < req.files.length; i++) {
       const file = req.files[i];
 
-      // Validate file magic bytes
       const validMagic = await validateMagicBytes(file.path);
       if (!validMagic) {
         await removeTmp(file.path);
-        continue; // Skip invalid files
+        continue;
       }
 
-      const alt = '';
-      const result = await processImage(file.path, file.originalname, alt);
+      const result = await processImage(file.path, file.originalname, '');
       result.order = i;
       results.push(result);
 
-      // Remove temp file immediately to free disk space for next image
       await removeTmp(file.path);
     }
 
+    res.set('Cache-Control', 'no-store');
     res.json({
-      message: `Przesłano i przetworzono ${results.length} zdjęć.`,
+      message: 'Przesłano ' + results.length + ' zdjęć.',
       images: results,
     });
   } catch (err) {
-    // Best-effort cleanup on error
     if (req.files) {
       for (const f of req.files) await removeTmp(f.path);
     }
-
-    console.error('Multi-image upload error:', err);
+    if (err && err.message && err.message.includes('Niedozwolon')) {
+      return res.status(400).json({ error: err.message });
+    }
     res.status(500).json({ error: 'Błąd przetwarzania zdjęć.' });
   }
 });
 
-// Error handler for multer
 router.use((err, _req, res, _next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: `Plik jest zbyt duży. Maksymalny rozmiar: ${process.env.MAX_FILE_SIZE_MB || 5} MB.` });
+      return res.status(400).json({ error: 'Plik jest zbyt duży.' });
     }
-    return res.status(400).json({ error: err.message });
+    return res.status(400).json({ error: 'Błąd przesyłania pliku.' });
   }
   if (err) {
-    return res.status(400).json({ error: err.message });
+    return res.status(400).json({ error: err.message || 'Błąd żądania.' });
   }
 });
 
