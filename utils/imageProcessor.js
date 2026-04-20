@@ -61,7 +61,6 @@ async function processImage(inputPath, _originalName, altText) {
   await openImage(inputPath)
     .resize({ width: MAX_WIDTH, withoutEnlargement: true })
     .jpeg({ quality: QUALITY, mozjpeg: true })
-    .withMetadata({ exif: {}, icc: undefined })
     .toFile(origPath);
   result.original = '/uploads/' + origFilename;
 

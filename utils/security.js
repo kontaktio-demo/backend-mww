@@ -43,8 +43,7 @@ function isSafeUrl(str) {
 
 function sanitiseString(value, maxLen = 500) {
   if (typeof value !== 'string') return '';
-  let v = value.replace(/\x00/g, '');
-  v = v.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+  let v = value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
   return v.trim().substring(0, maxLen);
 }
 
