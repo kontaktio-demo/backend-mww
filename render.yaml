@@ -1,34 +1,33 @@
-# ============================================================
-#  Render Blueprint – MWW Backend (Supabase)
-# ============================================================
-# Podłącz repo na render.com → New Blueprint Instance.
-
 services:
   - type: web
     name: mww-backend
     runtime: node
     region: frankfurt
     plan: free
-    buildCommand: npm install
+    buildCommand: npm ci --omit=dev
     startCommand: node --max-old-space-size=256 server.js
     healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
       - key: SUPABASE_URL
-        sync: false  # Ustaw ręcznie w panelu Render
+        sync: false
       - key: SUPABASE_SERVICE_KEY
-        sync: false  # Ustaw ręcznie
+        sync: false
       - key: JWT_SECRET
         generateValue: true
       - key: JWT_EXPIRES_IN
         value: 24h
+      - key: JWT_ISSUER
+        value: mww-backend
+      - key: JWT_AUDIENCE
+        value: mww-admin
       - key: CORS_ORIGINS
-        sync: false  # Ustaw ręcznie
+        sync: false
       - key: ADMIN_USERNAME
         value: mww
       - key: ADMIN_PASSWORD
-        sync: false  # Ustaw ręcznie
+        sync: false
       - key: MAX_FILE_SIZE_MB
         value: "5"
       - key: IMAGE_FORMAT
