@@ -70,18 +70,20 @@ app.use((_req, res, next) => {
   next();
 });
 
-const allowedOrigins = (process.env.CORS_ORIGINS || '')
+const DEFAULT_ALLOWED_ORIGINS = [
+  'https://panel-mww.vercel.app',
+];
+
+const configuredOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map(o => o.trim())
   .filter(Boolean);
 
+const allowedOrigins = Array.from(new Set([...DEFAULT_ALLOWED_ORIGINS, ...configuredOrigins]));
+
 app.use(cors({
   origin(origin, cb) {
     if (!origin) {
-      if (isProd) return cb(null, false);
-      return cb(null, true);
-    }
-    if (allowedOrigins.length === 0) {
       if (isProd) return cb(null, false);
       return cb(null, true);
     }
